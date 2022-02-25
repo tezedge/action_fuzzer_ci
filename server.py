@@ -4,18 +4,27 @@ import os
 import sys
 import asyncio
 import logging
+from enum import Enum
 from pathlib import Path
 from shutil import rmtree, copytree
-from time import sleep
 from psutil import process_iter
 from quart import Quart
+from async_timeout import timeout
 
 app = Quart(__name__)
 logger = logging.getLogger('fuzz log')
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
-node_running = False
+
+class Status(Enum):
+    NodeDown = 0
+    Init = 1
+    NodeUp = 2
+    Fuzzing = 3
+
+
+status = Status.NodeDown
 
 
 async def run(cmd, cwd):
@@ -43,7 +52,7 @@ async def read_lines(proc, stderr=True):
 
 
 async def run_node_task():
-    global node_running
+    global status
 
     async for line in read_lines(await run('git pull --rebase', cwd='/tezedge')):
         logger.info(f'[GIT] {line}')
@@ -56,22 +65,27 @@ async def run_node_task():
         '--bootstrap-db-path /data/bootstrap_db'
     )
 
-    async for line in read_lines(await run(cmd, cwd='/tezedge')):
+    node = await run(cmd, cwd='/tezedge')
+    status = Status.Init
+
+    async for line in read_lines(node):
         # use this message to make sure we are past PoW generation
-        if node_running is False and 'Peer Handshaking successful' in line:
-            node_running = True
+        if status == Status.Init and 'Peer Handshaking successful' in line:
+            status = Status.NodeUp
 
         logger.info(f'[NODE] {line}')
 
+    status = Status.NodeDown
+
 
 async def run_fuzzer_task():
-    global node_running
+    global status
 
     async for line in read_lines(await run('git pull --rebase', cwd='/tezedge_fuzz')):
         logger.info(f'[GIT] {line}')
 
-    while node_running is False:
-        # don't start fuzzing until the node is up
+    # don't start fuzzing until the node is up
+    while status != Status.NodeUp:
         await asyncio.sleep(1)
 
     cmd = (
@@ -79,21 +93,25 @@ async def run_fuzzer_task():
         'cargo fuzzcheck --test action_fuzz test_all'
     )
 
-    async for line in read_lines(
-            await run(cmd, cwd='/tezedge_fuzz/shell_automaton'),
-            stderr=False):
+    fuzzer = await run(cmd, cwd='/tezedge_fuzz/shell_automaton')
+
+    async for line in read_lines(fuzzer, stderr=False):
         """
         TODO: detect when fuzzer is not making futher progress after a while
         and and restart it. The new fuzzer instance will pick a differnt state
         from the running node.
         """
+        if status == Status.NodeUp and 'simplest_cov' in line:
+            status = Status.Fuzzing
+
         logger.info(f'[FUZZ] {line}')
 
     # at this point fuzzcheck has stopped, so generate the coverage report
-    logger.info(f'[+++] Fuzzer stopped. Generating coverage report...')
+    logger.info(f'[FUZZ] Fuzzer stopped. Generating coverage report...')
     cmd = 'python /report.py'
+    report = await run(cmd, cwd='/tezedge_fuzz/shell_automaton')
 
-    async for line in read_lines(await run(cmd, cwd='/tezedge_fuzz/shell_automaton')):
+    async for line in read_lines(report):
         logger.info(f'[REPORT] {line}')
 
     path = Path('/coverage/develop/.fuzzing.latest/action_fuzzer/')
@@ -102,16 +120,62 @@ async def run_fuzzer_task():
     copytree('/tezedge_fuzz/shell_automaton/fuzz/reports/', f'{path}')
 
 
+async def wait_for_node_shutdown():
+    global status
+
+    while status != Status.NodeDown:
+        await asyncio.sleep(1)
+
+
+def get_node_proc():
+    for proc in process_iter(['pid', 'name']):
+        if proc.name() == 'light-node':
+            return proc
+
+    return None
+
+
+def get_fuzzer_proc():
+    for proc in process_iter(['pid', 'name']):
+        if proc.name().startswith('action_fuzz'):
+            return proc
+
+    return None
+
+
+def terminate(proc):
+    if proc is not None:
+        proc.terminate()
+        return f'<p>SIGTERM: {proc.name()} ({proc.pid})</p>'
+    else:
+        return ''
+
+
 @app.route("/start")
 async def start():
-    global node_running
-    node_running = False
+    global status
     response = ''
 
-    for proc in process_iter(['pid', 'name']):
-        if proc.name() == 'light-node' or proc.name().startswith('action_fuzz'):
-            response += f'<p>SIGTERM: {proc.name()} ({proc.pid})</p>'
-            proc.terminate()
+    if status not in (Status.NodeDown, Status.Fuzzing):
+        return '<p>Error: busy</p>'
+
+    node_proc = get_node_proc()
+    response += terminate(node_proc)
+    response += terminate(get_fuzzer_proc())
+
+    if node_proc is not None:
+        response += f'<p>Waiting for node to shut-down...</p>'
+
+        try:
+            async with timeout(5.0) as cm:
+                await wait_for_node_shutdown()
+
+        except asyncio.TimeoutError:
+            response += f'<p>Timeout, sending SIGKILL...</p>'
+            node_proc.kill()
+            response += f'<p>Removing lock files...</p>'
+            Path('/data/context/index/lock').unlink()
+            Path('/data/bootstrap_db/db/LOCK').unlink()
 
     response += f'<p>Running node...</p>'
     app.add_background_task(run_node_task)
@@ -121,4 +185,4 @@ async def start():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('HTTP_PORT', 8080)))
+    app.run(host='127.0.0.1', port=int(os.getenv('HTTP_PORT', 8080)))
