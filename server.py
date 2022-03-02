@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from shutil import rmtree, copytree
 from psutil import process_iter
-from quart import Quart
+from quart import Quart, send_from_directory
 from async_timeout import timeout
 
 app = Quart(__name__)
@@ -118,6 +118,8 @@ async def run_fuzzer_task():
     path.mkdir(parents=True, exist_ok=True)
     rmtree(f'{path}', ignore_errors=True)
     copytree('/tezedge_fuzz/shell_automaton/fuzz/reports/', f'{path}')
+    rmtree('/static/reports/', ignore_errors=True)
+    copytree('/tezedge_fuzz/shell_automaton/fuzz/reports/', '/static/reports/')
 
 
 async def wait_for_node_shutdown():
@@ -182,6 +184,23 @@ async def start():
     response += f'<p>Running fuzzer...</p>'
     app.add_background_task(run_fuzzer_task)
     return response
+
+
+@app.route('/')
+async def report():
+    return await static_dir('index.html')
+
+
+@app.route('/<path:path>')
+async def static_dir(path):
+    logger.info(f'[STATIC] {path}')
+
+    if path.startswith('web-files/'):
+        root = '/static/web-files/'
+    else:
+        root = '/static/reports/'
+
+    return await send_from_directory(root, path)
 
 
 if __name__ == '__main__':
