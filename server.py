@@ -89,6 +89,7 @@ async def run_fuzzer_task():
         await asyncio.sleep(1)
 
     cmd = (
+        'cargo update; '
         'STATE_RESET_COUNT=10000 '
         'cargo fuzzcheck --test action_fuzz test_all'
     )
@@ -196,7 +197,7 @@ async def static_dir(path):
     logger.info(f'[STATIC] {path}')
 
     if path.startswith('web-files/'):
-        root = '/static/web-files/'
+        root = '/static/'
     else:
         root = '/static/reports/'
 

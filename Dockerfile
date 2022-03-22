@@ -17,7 +17,7 @@ RUN curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain ${rust_toolcha
 RUN cd fuzzcheck-rs && cargo install --path ./cargo-fuzzcheck/
 RUN pip install quart psutil async-timeout
 RUN mkdir /static
-COPY web-files /static/
+COPY web-files /static/web-files
 COPY ./server.py /server.py
 COPY ./report.py /report.py
 CMD python /server.py
