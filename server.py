@@ -62,7 +62,9 @@ async def run_node_task():
         './run.sh release '
         '--network=mainnet '
         '--tezos-data-dir /data '
-        '--bootstrap-db-path /data/bootstrap_db'
+        '--bootstrap-db-path /data/bootstrap_db '
+        '--record-shell-automaton-state-snapshots '
+        '--record-shell-automaton-actions'
     )
 
     node = await run(cmd, cwd='/tezedge')
