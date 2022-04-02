@@ -83,7 +83,7 @@ async def run_node_task():
 async def run_fuzzer_task():
     global status
 
-    async for line in read_lines(await run('git pull --rebase', cwd='/tezedge_fuzz')):
+    async for line in read_lines(await run('git checkout -- .; git pull --rebase', cwd='/tezedge_fuzz')):
         logger.info(f'[GIT] {line}')
 
     # don't start fuzzing until the node is up
